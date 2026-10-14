@@ -584,6 +584,12 @@ static void SetGraphicsDynamicParams(const CommandBuffer& buffer, vk::CommandBuf
 	const std::array blend_constants {blend.red, blend.green, blend.blue, blend.alpha};
 	const vk::Bool32 depth_test  = depth.depth_test_enable ? VK_TRUE : VK_FALSE;
 	const vk::Bool32 depth_write = depth.depth_write_enable ? VK_TRUE : VK_FALSE;
+#if !defined(__APPLE__)
+	// VK_DYNAMIC_STATE_DEPTH_BOUNDS is set on every draw: these guest register
+	// values no longer participate in the graphics pipeline cache key.
+	// Set it unconditionally to avoid relying on state surviving pipeline binds.
+	vk_buffer.setDepthBounds(depth.depth_min_bounds, depth.depth_max_bounds);
+#endif
 
 	const auto& mode              = ctx.GetModeControl();
 	const auto& poly_offset       = ctx.GetPolyOffset();

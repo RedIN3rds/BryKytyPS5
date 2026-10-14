@@ -988,8 +988,13 @@ TextureCache::OverlapResult TextureCache::ResolveOverlap(const ImageInfo& reques
 		if (requested.IsBlock() && !cached.info.IsBlock()) {
 			return {ExpandImage(requested, cached_id)};
 		}
-		if (requested.data.size == cached.info.data.size &&
-		    (requested.IsVolume() || cached.info.IsVolume())) {
+		// KYTY: a 3D image may grow in depth while retaining its block-slice layout.
+		if ((requested.IsVolume() || cached.info.IsVolume()) &&
+		    (requested.data.size == cached.info.data.size ||
+		     (requested.type == cached.info.type && requested.resources == cached.info.resources &&
+		      requested.extent.width == cached.info.extent.width &&
+		      requested.extent.height == cached.info.extent.height &&
+		      requested.extent.depth > cached.info.extent.depth))) {
 			return {ExpandImage(requested, cached_id)};
 		}
 		// Equal pitch does not imply equal mip placement: a changed extent can move
@@ -1024,6 +1029,10 @@ TextureCache::OverlapResult TextureCache::ResolveOverlap(const ImageInfo& reques
 		      cached.info.resources.levels > 1 &&
 		      requested.resources.layers == cached.info.resources.layers))) {
 			return {ExpandImage(requested, cached_id)};
+		}
+		// KYTY: do not reinterpret a growing allocation as another native image type.
+		if (requested.type != cached.info.type) {
+			return {merged_id};
 		}
 		if (requested.pixel_format != cached.info.pixel_format ||
 		    requested.data.size <= cached.info.data.size) {
@@ -1502,7 +1511,18 @@ TextureCache::MaterializeColorClearNow(ImageId id, const ImageDesc& desc,
 		const auto address = range.address + slice_size * (first + slice);
 		uint8_t code = 0;
 		if (!LibKernel::Memory::TryReadBacking(address, &code, sizeof(code))) {
-			EXIT("TextureCache: failed to read color metadata backing\n");
+			static std::atomic_uint32_t failed_metadata_reads {0};
+			const auto failure = failed_metadata_reads.fetch_add(1, std::memory_order_relaxed);
+			if (failure < 32) {
+				LOGF("TextureCache: unavailable color metadata backing "
+				     "address=0x%016" PRIx64 " size=0x%016" PRIx64
+				     " slice=%u gpu_written=%u\n",
+				     static_cast<uint64_t>(address), static_cast<uint64_t>(slice_size),
+				     slice, static_cast<unsigned>(gpu_written));
+			}
+			// Do not treat missing metadata as a verified clear or cache its keys.
+			keys.count = 0;
+			return ColorClearOutcome::Other;
 		}
 		if (settled) {
 			keys.addresses[keys.count] = address;
@@ -1517,7 +1537,15 @@ TextureCache::MaterializeColorClearNow(ImageId id, const ImageDesc& desc,
 		settled = false;
 		std::vector<uint8_t> bytes(slice_size);
 		if (!LibKernel::Memory::TryReadBacking(address, bytes.data(), bytes.size())) {
-			EXIT("TextureCache: failed to read color metadata slice\n");
+			static std::atomic_uint32_t failed_slice_reads {0};
+			const auto failure = failed_slice_reads.fetch_add(1, std::memory_order_relaxed);
+			if (failure < 32) {
+				LOGF("TextureCache: unavailable color metadata slice "
+				     "address=0x%016" PRIx64 " size=0x%016" PRIx64 "\n",
+				     static_cast<uint64_t>(address), static_cast<uint64_t>(slice_size));
+			}
+			keys.count = 0;
+			return ColorClearOutcome::Other;
 		}
 		if (!std::all_of(bytes.begin(), bytes.end(), [code](uint8_t byte) { return byte == code; })) {
 			continue;
@@ -2601,7 +2629,7 @@ bool TextureCache::DownloadImageMemory(ImageId id) {
 		    // Separate from m_lock: the GPU thread may wait for this callback while it owns the
 		    // texture cache lock (for example on staging wrap). Keep overlapping records distinct.
 		    std::lock_guard lock(m_pending_download_mutex);
-		    const auto      pending = std::ranges::find(m_pending_downloads, range);
+		    const auto      pending = std::ranges::find_if(m_pending_downloads, [&](const GuestRange& pending_range) { return pending_range == range; });
 		    EXIT_IF(pending == m_pending_downloads.end());
 		    m_pending_downloads.erase(pending);
 		    (void)owner;

@@ -1910,8 +1910,10 @@ PipelineCache::Pipeline* PipelineCache::GetGraphicsPipeline(
 		EXIT("Pipeline: sample-rate shading is required but unsupported by the host\n");
 	}
 	static_params.depth_bounds_test_enable = depth.depth_bounds_test_enable;
-	static_params.depth_min_bounds         = depth.depth_min_bounds;
-	static_params.depth_max_bounds         = depth.depth_max_bounds;
+	// Depth bounds are dynamic Vulkan state, not part of pipeline identity.
+	// Keep canonical values for hashing, equality and pipeline library keys.
+	static_params.depth_min_bounds = 0.0f;
+	static_params.depth_max_bounds = 1.0f;
 	const bool rect_list = Prospero::IsRectList(command.GetUserConfig().GetPrimType());
 	static_params.cull_back  = !rect_list && mc.cull_back;
 	static_params.cull_front = !rect_list && mc.cull_front;
@@ -1960,6 +1962,50 @@ PipelineCache::Pipeline* PipelineCache::GetGraphicsPipeline(
 		}
 		return found;
 	}
+
+	if (PermutationLogEnabled()) {
+    const auto full_hash = GraphicsPipelineKeyHash{}(key);
+
+    const auto rendering_hash =
+        XXH3_64bits(&key.rendering, sizeof(key.rendering));
+
+    const auto vertex_hash =
+        XXH3_64bits(&key.vertex_input, sizeof(key.vertex_input));
+
+    const auto static_hash =
+        XXH3_64bits(&key.static_params, sizeof(key.static_params));
+
+    std::printf(
+        "[PIPELINE KEY] vs=%llu ps=%llu "
+        "full=%016llx rendering=%016llx "
+        "vertex=%016llx static=%016llx "
+        "cache=%zu\n",
+        static_cast<unsigned long long>(vs_id),
+        static_cast<unsigned long long>(ps_id),
+        static_cast<unsigned long long>(full_hash),
+        static_cast<unsigned long long>(rendering_hash),
+        static_cast<unsigned long long>(vertex_hash),
+        static_cast<unsigned long long>(static_hash),
+        m_graphics_pipelines.size()
+    );
+    std::printf(
+        "[PIPELINE STATIC] vs=%llu ps=%llu depth_bounds=%u min=%a max=%a "
+        "cull_back=%u cull_front=%u face=%u provoking_last=%u "
+        "polygon=%u samples=%u topology=%u\n",
+        static_cast<unsigned long long>(vs_id),
+        static_cast<unsigned long long>(ps_id),
+        static_cast<unsigned>(static_params.depth_bounds_test_enable),
+        static_cast<double>(static_params.depth_min_bounds),
+        static_cast<double>(static_params.depth_max_bounds),
+        static_cast<unsigned>(static_params.cull_back),
+        static_cast<unsigned>(static_params.cull_front),
+        static_cast<unsigned>(static_params.face),
+        static_cast<unsigned>(static_params.provoking_vtx_last),
+        static_cast<unsigned>(static_params.polygon_mode),
+        static_cast<unsigned>(static_params.samples),
+        static_cast<unsigned>(static_params.topology)
+    );
+	}	
 
 	if (graphics_debug_dump_enabled()) {
 		ShaderDbgDumpInputInfo(vs_input_info);
@@ -2241,8 +2287,9 @@ uint32_t PipelineCache::PrefetchGraphicsPipeline(const HW::Context& ctx, const H
 	static_params.samples                 = samples;
 	static_params.sample_shading_enable   = ps_active && samples > 1 && pixel_info.ps_sample_shading;
 	static_params.depth_bounds_test_enable = with_depth && dc.depth_bounds_enable;
-	static_params.depth_min_bounds         = ctx.GetDepthBoundsMin();
-	static_params.depth_max_bounds         = ctx.GetDepthBoundsMax();
+	// Match the runtime pipeline key's dynamic-depth-bounds normalization.
+	static_params.depth_min_bounds = 0.0f;
+	static_params.depth_max_bounds = 1.0f;
 	static_params.cull_back                = mc.cull_back;
 	static_params.cull_front               = mc.cull_front;
 	static_params.face                     = mc.face;

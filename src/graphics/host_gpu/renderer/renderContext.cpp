@@ -8,6 +8,7 @@
 #include "graphics/host_gpu/renderer/drainStats.h"
 #include "graphics/presentation/videoOut.h"
 #include "libs/errno.h"
+#include "graphics/host_gpu/memoryDiagnostics.h"
 
 #include <algorithm>
 #include <atomic>
@@ -326,6 +327,27 @@ void RenderContext::RunGarbageCollector() {
 	m_texture_cache.ProcessDownloadImages();
 	m_texture_cache.RunGarbageCollector();
 	m_buffer_cache.RunGarbageCollector();
+
+	#if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
+	static auto last_log = std::chrono::steady_clock::now();
+
+	const auto now = std::chrono::steady_clock::now();
+
+	if (now - last_log >= std::chrono::seconds(5))
+	{
+		last_log = now;
+		LogHostMemoryUsage();
+		LogSystemCommit();
+
+		    constexpr double MB = 1024.0 * 1024.0;
+
+			std::printf(
+				"[VULKAN] Used: %.2f MB | Budget: %.2f MB\n",
+				m_graphics.GetDeviceMemoryUsage() / MB,
+				m_graphics.GetTotalMemoryBudget() / MB
+			);
+	}
+	#endif
 }
 
 void RenderContext::AddInterruptEq(LibKernel::EventQueue::KernelEqueue eq, int event_id) {
